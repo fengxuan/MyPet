@@ -1,10 +1,17 @@
 package main
 
 import (
+	"image"
 	"image/color"
+	_ "image/png"
 	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 )
 
@@ -36,16 +43,39 @@ type Game struct {
 	lastDragWindowY        int
 	cursorToWindowX        float64
 	cursorToWindowY        float64
+	dragMoved              bool
+	hitActive              bool
+	hitElapsed             float64
+	animations             PetAnimations
 }
+
+type Animation struct {
+	frames []*ebiten.Image
+	fps    float64
+}
+
+type PetAnimations struct {
+	idle  Animation
+	hover Animation
+	hit   Animation
+}
+
+const hitDuration = 0.65
 
 func (g *Game) Update() error {
 	if ebiten.IsKeyPressed(ebiten.KeyEscape) {
 		return ebiten.Termination
 	}
+	if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+		g.triggerHit()
+	}
 
 	mx, my := ebiten.CursorPosition()
 	mouseDown := ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft)
 	if !mouseDown {
+		if g.dragging && !g.dragMoved {
+			g.triggerHit()
+		}
 		g.dragging = false
 	}
 
@@ -60,6 +90,7 @@ func (g *Game) Update() error {
 		g.dragStartCursorScreenX = g.dragStartWindowX + int(float64(mx)*g.cursorToWindowX)
 		g.dragStartCursorScreenY = g.dragStartWindowY + int(float64(my)*g.cursorToWindowY)
 		g.lastDragWindowX, g.lastDragWindowY = g.dragStartWindowX, g.dragStartWindowY
+		g.dragMoved = false
 	}
 	if g.dragging {
 		// Keep the hover pose stable while the native transparent window is moving.
@@ -77,10 +108,17 @@ func (g *Game) Update() error {
 		if targetWindowX != g.lastDragWindowX || targetWindowY != g.lastDragWindowY {
 			ebiten.SetWindowPosition(targetWindowX, targetWindowY)
 			g.lastDragWindowX, g.lastDragWindowY = targetWindowX, targetWindowY
+			g.dragMoved = true
 		}
 	}
 	if !g.dragging {
 		g.time += 1.0 / 60.0
+		if g.hitActive {
+			g.hitElapsed += 1.0 / 60.0
+			if g.hitElapsed >= hitDuration {
+				g.hitActive = false
+			}
+		}
 	}
 
 	return nil
@@ -95,7 +133,11 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Clear()
 
 	petY := 205.0 + math.Sin(g.time*2.2)*5
-	drawPet(screen, screenWidth/2, petY, g.hovered, g.time)
+	if animation, elapsed, ok := g.currentAnimation(); ok {
+		drawAnimationFrame(screen, animation, elapsed, screenWidth/2, screenHeight/2)
+		return
+	}
+	drawPet(screen, screenWidth/2, petY, g.hovered, g.time, g.hitActive, g.hitElapsed)
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
@@ -115,12 +157,99 @@ func main() {
 		ScreenTransparent: true,
 		SkipTaskbar:       true,
 	}
-	if err := ebiten.RunGameWithOptions(&Game{}, runOptions); err != nil {
+	game := &Game{animations: loadPetAnimations(findAssetsRoot())}
+	if err := ebiten.RunGameWithOptions(game, runOptions); err != nil {
 		panic(err)
 	}
 }
 
-func drawPet(screen *ebiten.Image, cx, cy float64, hovered bool, t float64) {
+func findAssetsRoot() string {
+	candidates := []string{"assets"}
+	if executable, err := os.Executable(); err == nil {
+		executableDir := filepath.Dir(executable)
+		candidates = append(candidates,
+			filepath.Join(executableDir, "assets"),
+			filepath.Join(executableDir, "..", "assets"),
+		)
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return "assets"
+}
+
+func loadPetAnimations(root string) PetAnimations {
+	return PetAnimations{
+		idle:  loadAnimation(filepath.Join(root, "idle"), 8),
+		hover: loadAnimation(filepath.Join(root, "hover"), 10),
+		hit:   loadAnimation(filepath.Join(root, "hit"), 12),
+	}
+}
+
+func loadAnimation(directory string, fps float64) Animation {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return Animation{fps: fps}
+	}
+
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".png") {
+			continue
+		}
+		paths = append(paths, filepath.Join(directory, entry.Name()))
+	}
+	sort.Strings(paths)
+
+	frames := make([]*ebiten.Image, 0, len(paths))
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		decoded, _, decodeErr := image.Decode(file)
+		_ = file.Close()
+		if decodeErr != nil {
+			continue
+		}
+		frames = append(frames, ebiten.NewImageFromImage(decoded))
+	}
+
+	return Animation{frames: frames, fps: fps}
+}
+
+func (g *Game) triggerHit() {
+	g.hitActive = true
+	g.hitElapsed = 0
+}
+
+func (g *Game) currentAnimation() (Animation, float64, bool) {
+	if g.hitActive && len(g.animations.hit.frames) > 0 {
+		return g.animations.hit, g.hitElapsed, true
+	}
+	if g.hovered && len(g.animations.hover.frames) > 0 {
+		return g.animations.hover, g.time, true
+	}
+	if len(g.animations.idle.frames) > 0 {
+		return g.animations.idle, g.time, true
+	}
+	return Animation{}, 0, false
+}
+
+func drawAnimationFrame(screen *ebiten.Image, animation Animation, elapsed float64, cx, cy float64) {
+	frameIndex := int(elapsed*animation.fps) % len(animation.frames)
+	frame := animation.frames[frameIndex]
+	width, height := frame.Size()
+	scale := math.Min(330/float64(width), 330/float64(height))
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Scale(scale, scale)
+	op.GeoM.Translate(cx-float64(width)*scale/2, cy-float64(height)*scale/2)
+	screen.DrawImage(frame, op)
+}
+
+func drawPet(screen *ebiten.Image, cx, cy float64, hovered bool, t float64, hitting bool, hitElapsed float64) {
 	// The shadow is intentionally made of overlapping circles so it stays crisp at every scale.
 	for i := 0; i < 7; i++ {
 		vector.DrawFilledCircle(screen, float32(cx-45+float64(i)*15), float32(cy+143), 25, shadow, true)
@@ -183,11 +312,17 @@ func drawPet(screen *ebiten.Image, cx, cy float64, hovered bool, t float64) {
 
 	// Paws wave up when the mouse is over the pet.
 	pawLift := 0.0
+	pawOffset := 77.0
 	if hovered {
 		pawLift = -39 + math.Sin(t*7)*5
 	}
+	if hitting {
+		// The fallback pose mimics two paws striking the invisible desktop.
+		pawLift = 15 + math.Abs(math.Sin(hitElapsed*18))*10
+		pawOffset = 47
+	}
 	for _, side := range []float64{-1, 1} {
-		px := cx + side*77
+		px := cx + side*pawOffset
 		py := cy + 93 + pawLift
 		vector.DrawFilledCircle(screen, float32(px), float32(py), 29, purple, true)
 		vector.DrawFilledCircle(screen, float32(px), float32(py-2), 21, peach2, true)
@@ -200,6 +335,10 @@ func drawPet(screen *ebiten.Image, cx, cy float64, hovered bool, t float64) {
 		// Little attention marks above the ears.
 		vector.StrokeLine(screen, float32(cx-27), float32(cy-160), float32(cx-36), float32(cy-177), 4, peach, true)
 		vector.StrokeLine(screen, float32(cx+27), float32(cy-160), float32(cx+36), float32(cy-177), 4, peach, true)
+	}
+	if hitting {
+		vector.StrokeLine(screen, float32(cx-57), float32(cy+128), float32(cx-72), float32(cy+143), 4, peach, true)
+		vector.StrokeLine(screen, float32(cx+57), float32(cy+128), float32(cx+72), float32(cy+143), 4, peach, true)
 	}
 }
 
