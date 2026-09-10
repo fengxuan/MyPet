@@ -3,11 +3,13 @@ package main
 import (
 	"image"
 	"image/color"
+	"image/draw"
 	_ "image/png"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -47,6 +49,18 @@ type Game struct {
 	hitActive              bool
 	hitElapsed             float64
 	animations             PetAnimations
+	pets                   []Pet
+	petIndex               int
+	menuOpen               bool
+	menuTimer              float64
+	nextButton             *ebiten.Image
+	assetsRoot             string
+	timing                 TimingConfig
+}
+
+type Pet struct {
+	name       string
+	animations PetAnimations
 }
 
 type Animation struct {
@@ -60,21 +74,49 @@ type PetAnimations struct {
 	hit   Animation
 }
 
-const hitDuration = 0.65
+const (
+	nextButtonWidth  = 160
+	nextButtonHeight = 48
+	nextButtonMargin = 16
+	menuVisibleFor   = 4.0
+)
 
 func (g *Game) Update() error {
 	if ebiten.IsKeyPressed(ebiten.KeyEscape) {
 		return ebiten.Termination
 	}
+
+	mx, my := ebiten.CursorPosition()
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight) {
+		g.refreshPets()
+		if len(g.pets) >= 2 {
+			g.menuOpen = true
+			g.menuTimer = menuVisibleFor
+		}
+	}
+	if g.menuOpen {
+		g.menuTimer -= 1.0 / 60.0
+		if g.menuTimer <= 0 {
+			g.menuOpen = false
+		}
+	}
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) && g.menuOpen && hitNextButton(mx, my) {
+		g.nextPet()
+		g.menuOpen = true
+		g.menuTimer = menuVisibleFor
+		g.dragging = false
+		return nil
+	}
+
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
 		g.triggerHit()
 	}
 
-	mx, my := ebiten.CursorPosition()
 	mouseDown := ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft)
 	if !mouseDown {
 		if g.dragging && !g.dragMoved {
 			g.triggerHit()
+			g.menuOpen = false
 		}
 		g.dragging = false
 	}
@@ -86,6 +128,7 @@ func (g *Game) Update() error {
 	}
 	if !g.dragging && g.hovered && mouseDown {
 		g.dragging = true
+		g.menuOpen = false
 		g.dragStartWindowX, g.dragStartWindowY = ebiten.WindowPosition()
 		g.dragStartCursorScreenX = g.dragStartWindowX + int(float64(mx)*g.cursorToWindowX)
 		g.dragStartCursorScreenY = g.dragStartWindowY + int(float64(my)*g.cursorToWindowY)
@@ -115,7 +158,7 @@ func (g *Game) Update() error {
 		g.time += 1.0 / 60.0
 		if g.hitActive {
 			g.hitElapsed += 1.0 / 60.0
-			if g.hitElapsed >= hitDuration {
+			if g.hitElapsed >= g.currentHitDuration() {
 				g.hitActive = false
 			}
 		}
@@ -133,11 +176,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	screen.Clear()
 
 	petY := 205.0 + math.Sin(g.time*2.2)*5
-	if animation, elapsed, ok := g.currentAnimation(); ok {
-		drawAnimationFrame(screen, animation, elapsed, screenWidth/2, screenHeight/2)
-		return
+	if animation, elapsed, loop, ok := g.currentAnimation(); ok {
+		drawAnimationFrame(screen, animation, elapsed, screenWidth/2, screenHeight/2, loop)
+	} else {
+		drawPet(screen, screenWidth/2, petY, g.hovered, g.time, g.hitActive, g.hitElapsed)
 	}
-	drawPet(screen, screenWidth/2, petY, g.hovered, g.time, g.hitActive, g.hitElapsed)
+	if g.menuOpen {
+		drawNextButton(screen, g.nextButton)
+	}
 }
 
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
@@ -157,7 +203,20 @@ func main() {
 		ScreenTransparent: true,
 		SkipTaskbar:       true,
 	}
-	game := &Game{animations: loadPetAnimations(findAssetsRoot())}
+	root := findAssetsRoot()
+	timing := loadTimingConfig(root)
+	pets := loadAllPets(root, timing)
+	petIndex := savedPetIndex(pets)
+	game := &Game{
+		pets:       pets,
+		petIndex:   petIndex,
+		nextButton: loadPNG(filepath.Join(root, "ui", "next.png")),
+		assetsRoot: root,
+		timing:     timing,
+	}
+	if len(pets) > 0 {
+		game.animations = pets[petIndex].animations
+	}
 	if err := ebiten.RunGameWithOptions(game, runOptions); err != nil {
 		panic(err)
 	}
@@ -180,12 +239,200 @@ func findAssetsRoot() string {
 	return "assets"
 }
 
-func loadPetAnimations(root string) PetAnimations {
-	return PetAnimations{
-		idle:  loadAnimation(filepath.Join(root, "idle"), 8),
-		hover: loadAnimation(filepath.Join(root, "hover"), 10),
-		hit:   loadAnimation(filepath.Join(root, "hit"), 12),
+var (
+	idleKeys  = []string{"idle", "stand", "sleep", "sleeping", "walk", "sitting", "laying"}
+	hoverKeys = []string{"hover", "meow", "alert", "look"}
+	hitKeys   = []string{"hit", "itch", "lick", "licking", "slap", "attack", "action"}
+)
+
+func loadAllPets(root string, timing TimingConfig) []Pet {
+	petsDir := filepath.Join(root, "pets")
+	pets := collectPets(petsDir, "", timing)
+	if len(pets) == 0 {
+		animations := loadPetFromDir(root, timing)
+		if hasAnimationFrames(animations) {
+			pets = append(pets, Pet{name: "default", animations: animations})
+		}
 	}
+	sort.Slice(pets, func(i, j int) bool {
+		if (pets[i].name == "orange") != (pets[j].name == "orange") {
+			return pets[i].name == "orange"
+		}
+		return pets[i].name < pets[j].name
+	})
+	return pets
+}
+
+func collectPets(dir, namePrefix string, timing TimingConfig) []Pet {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	pets := make([]Pet, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		name := entry.Name()
+		if namePrefix != "" {
+			name = namePrefix + "/" + name
+		}
+		childDir := filepath.Join(dir, entry.Name())
+		animations := loadPetFromDir(childDir, timing)
+		if hasAnimationFrames(animations) {
+			pets = append(pets, Pet{name: name, animations: animations})
+			continue
+		}
+		pets = append(pets, collectPets(childDir, name, timing)...)
+	}
+	return pets
+}
+
+func hasAnimationFrames(animations PetAnimations) bool {
+	return len(animations.idle.frames) > 0 || len(animations.hover.frames) > 0 || len(animations.hit.frames) > 0
+}
+
+func loadPetFromDir(dir string, timing TimingConfig) PetAnimations {
+	idle := loadNamedAnimation(dir, idleKeys, timing.IdleFPS)
+	hover := loadNamedAnimation(dir, hoverKeys, timing.HoverFPS)
+	hit := loadNamedAnimation(dir, hitKeys, timing.HitFPS)
+	if len(idle.frames) == 0 {
+		idle = loadLooseAnimation(dir, timing.IdleFPS, hoverKeys, hitKeys)
+	}
+	if len(hover.frames) == 0 {
+		hover = idle
+		hover.fps = timing.HoverFPS
+	}
+	if len(hit.frames) == 0 {
+		hit = idle
+		hit.fps = timing.HitFPS
+	}
+	return PetAnimations{idle: idle, hover: hover, hit: hit}
+}
+
+func loadNamedAnimation(dir string, keys []string, fps float64) Animation {
+	for _, key := range keys {
+		sub := filepath.Join(dir, key)
+		if info, err := os.Stat(sub); err == nil && info.IsDir() {
+			animation := loadAnimation(sub, fps)
+			if len(animation.frames) > 0 {
+				return animation
+			}
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return Animation{fps: fps}
+	}
+	paths := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !isPNG(entry.Name()) {
+			continue
+		}
+		if nameMatchesKeys(entry.Name(), keys) {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
+	sort.Strings(paths)
+	return animationFromPaths(paths, fps)
+}
+
+func loadLooseAnimation(dir string, fps float64, skip ...[]string) Animation {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return Animation{fps: fps}
+	}
+	var ignored []string
+	for _, keys := range skip {
+		ignored = append(ignored, keys...)
+	}
+	paths := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !isPNG(entry.Name()) {
+			continue
+		}
+		if nameMatchesKeys(entry.Name(), ignored) {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, entry.Name()))
+	}
+	sort.Strings(paths)
+	return animationFromPaths(paths, fps)
+}
+
+func nameMatchesKeys(filename string, keys []string) bool {
+	base := strings.ToLower(strings.TrimSuffix(filename, filepath.Ext(filename)))
+	base = strings.ReplaceAll(base, "_", "-")
+	base = strings.ReplaceAll(base, " ", "-")
+	parts := strings.FieldsFunc(base, func(r rune) bool {
+		return r == '-' || r == '.'
+	})
+	for _, key := range keys {
+		if base == key {
+			return true
+		}
+		for _, part := range parts {
+			if part == key {
+				return true
+			}
+		}
+		if strings.HasSuffix(base, "-"+key) || strings.HasPrefix(base, key+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+func isPNG(name string) bool {
+	return strings.EqualFold(filepath.Ext(name), ".png")
+}
+
+func loadPNG(path string) *ebiten.Image {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	decoded, _, err := image.Decode(file)
+	if err != nil {
+		return nil
+	}
+	return ebiten.NewImageFromImage(decoded)
+}
+
+func petIndexPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "mypet-current-pet")
+	}
+	return filepath.Join(dir, "mypet", "current-pet")
+}
+
+func savedPetIndex(pets []Pet) int {
+	if len(pets) == 0 {
+		return 0
+	}
+	data, err := os.ReadFile(petIndexPath())
+	if err != nil {
+		return 0
+	}
+	saved := strings.TrimSpace(string(data))
+	for i, pet := range pets {
+		if pet.name == saved {
+			return i
+		}
+	}
+	if index, err := strconv.Atoi(saved); err == nil && index >= 0 && index < len(pets) {
+		return index
+	}
+	return 0
+}
+
+func saveCurrentPet(name string) {
+	path := petIndexPath()
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = os.WriteFile(path, []byte(name), 0o644)
 }
 
 func loadAnimation(directory string, fps float64) Animation {
@@ -193,31 +440,68 @@ func loadAnimation(directory string, fps float64) Animation {
 	if err != nil {
 		return Animation{fps: fps}
 	}
-
 	paths := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".png") {
+		if entry.IsDir() || !isPNG(entry.Name()) {
 			continue
 		}
 		paths = append(paths, filepath.Join(directory, entry.Name()))
 	}
 	sort.Strings(paths)
+	return animationFromPaths(paths, fps)
+}
 
-	frames := make([]*ebiten.Image, 0, len(paths))
+func animationFromPaths(paths []string, fps float64) Animation {
+	frames := make([]*ebiten.Image, 0)
 	for _, path := range paths {
-		file, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		decoded, _, decodeErr := image.Decode(file)
-		_ = file.Close()
-		if decodeErr != nil {
-			continue
-		}
-		frames = append(frames, ebiten.NewImageFromImage(decoded))
+		frames = append(frames, framesFromFile(path)...)
 	}
-
 	return Animation{frames: frames, fps: fps}
+}
+
+func framesFromFile(path string) []*ebiten.Image {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	decoded, _, err := image.Decode(file)
+	_ = file.Close()
+	if err != nil {
+		return nil
+	}
+	return framesFromImage(decoded)
+}
+
+func framesFromImage(src image.Image) []*ebiten.Image {
+	bounds := src.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	frameW, frameH, cols, rows := width, height, 1, 1
+	if height >= 8 && width/height >= 2 {
+		frameW, frameH = height, height
+		cols = width / height
+	} else if width >= 8 && height/width >= 2 {
+		frameW, frameH = width, width
+		rows = height / width
+	}
+	frames := make([]*ebiten.Image, 0, cols*rows)
+	for row := 0; row < rows; row++ {
+		for col := 0; col < cols; col++ {
+			rect := image.Rect(
+				bounds.Min.X+col*frameW,
+				bounds.Min.Y+row*frameH,
+				bounds.Min.X+(col+1)*frameW,
+				bounds.Min.Y+(row+1)*frameH,
+			)
+			frames = append(frames, ebiten.NewImageFromImage(cropImage(src, rect)))
+		}
+	}
+	return frames
+}
+
+func cropImage(src image.Image, rect image.Rectangle) *image.RGBA {
+	dst := image.NewRGBA(image.Rect(0, 0, rect.Dx(), rect.Dy()))
+	draw.Draw(dst, dst.Bounds(), src, rect.Min, draw.Src)
+	return dst
 }
 
 func (g *Game) triggerHit() {
@@ -225,25 +509,115 @@ func (g *Game) triggerHit() {
 	g.hitElapsed = 0
 }
 
-func (g *Game) currentAnimation() (Animation, float64, bool) {
-	if g.hitActive && len(g.animations.hit.frames) > 0 {
-		return g.animations.hit, g.hitElapsed, true
+func (g *Game) currentPetName() string {
+	if g.petIndex >= 0 && g.petIndex < len(g.pets) {
+		return g.pets[g.petIndex].name
 	}
-	if g.hovered && len(g.animations.hover.frames) > 0 {
-		return g.animations.hover, g.time, true
-	}
-	if len(g.animations.idle.frames) > 0 {
-		return g.animations.idle, g.time, true
-	}
-	return Animation{}, 0, false
+	return ""
 }
 
-func drawAnimationFrame(screen *ebiten.Image, animation Animation, elapsed float64, cx, cy float64) {
-	frameIndex := int(elapsed*animation.fps) % len(animation.frames)
+func (g *Game) refreshPets() {
+	current := g.currentPetName()
+	g.timing = loadTimingConfig(g.assetsRoot)
+	g.pets = loadAllPets(g.assetsRoot, g.timing)
+	g.petIndex = 0
+	for i, pet := range g.pets {
+		if pet.name == current {
+			g.petIndex = i
+			break
+		}
+	}
+	if len(g.pets) > 0 {
+		g.animations = g.pets[g.petIndex].animations
+	} else {
+		g.animations = PetAnimations{}
+	}
+}
+
+func (g *Game) nextPet() {
+	g.refreshPets()
+	if len(g.pets) < 2 {
+		return
+	}
+	g.petIndex = (g.petIndex + 1) % len(g.pets)
+	g.animations = g.pets[g.petIndex].animations
+	g.hitActive = false
+	g.hitElapsed = 0
+	g.time = 0
+	saveCurrentPet(g.pets[g.petIndex].name)
+}
+
+func (g *Game) currentHitDuration() float64 {
+	if g.timing.HitDuration > 0 {
+		return g.timing.HitDuration
+	}
+	animation := g.animations.hit
+	if len(animation.frames) == 0 || animation.fps <= 0 {
+		return defaultHitDuration
+	}
+	duration := float64(len(animation.frames)) / animation.fps
+	if duration < 0.8 {
+		return 0.8
+	}
+	return duration
+}
+
+func (g *Game) currentAnimation() (Animation, float64, bool, bool) {
+	if g.hitActive && len(g.animations.hit.frames) > 0 {
+		return g.animations.hit, g.hitElapsed, false, true
+	}
+	if g.hovered && len(g.animations.hover.frames) > 0 {
+		return g.animations.hover, g.time, true, true
+	}
+	if len(g.animations.idle.frames) > 0 {
+		return g.animations.idle, g.time, true, true
+	}
+	return Animation{}, 0, false, false
+}
+
+func nextButtonRect() (x0, y0, x1, y1 float64) {
+	x0 = (screenWidth - nextButtonWidth) / 2
+	y0 = screenHeight - nextButtonHeight - nextButtonMargin
+	return x0, y0, x0 + nextButtonWidth, y0 + nextButtonHeight
+}
+
+func hitNextButton(mx, my int) bool {
+	x0, y0, x1, y1 := nextButtonRect()
+	x, y := float64(mx), float64(my)
+	return x >= x0 && x < x1 && y >= y0 && y < y1
+}
+
+func drawNextButton(screen *ebiten.Image, button *ebiten.Image) {
+	x0, y0, x1, y1 := nextButtonRect()
+	if button != nil {
+		width, height := button.Size()
+		op := &ebiten.DrawImageOptions{}
+		op.GeoM.Scale((x1-x0)/float64(width), (y1-y0)/float64(height))
+		op.GeoM.Translate(x0, y0)
+		screen.DrawImage(button, op)
+		return
+	}
+	vector.DrawFilledRect(screen, float32(x0), float32(y0), float32(x1-x0), float32(y1-y0), color.RGBA{R: 40, G: 28, B: 22, A: 210}, true)
+}
+
+func drawAnimationFrame(screen *ebiten.Image, animation Animation, elapsed float64, cx, cy float64, loop bool) {
+	frameCount := len(animation.frames)
+	frameIndex := int(elapsed * animation.fps)
+	if loop {
+		frameIndex = frameIndex % frameCount
+	} else if frameIndex >= frameCount {
+		frameIndex = frameCount - 1
+	}
+	if frameIndex < 0 {
+		frameIndex = 0
+	}
 	frame := animation.frames[frameIndex]
 	width, height := frame.Size()
 	scale := math.Min(330/float64(width), 330/float64(height))
 	op := &ebiten.DrawImageOptions{}
+	if width <= 64 && height <= 64 {
+		op.Filter = ebiten.FilterNearest
+	}
 	op.GeoM.Scale(scale, scale)
 	op.GeoM.Translate(cx-float64(width)*scale/2, cy-float64(height)*scale/2)
 	screen.DrawImage(frame, op)
