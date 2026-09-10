@@ -248,6 +248,7 @@ var (
 func loadAllPets(root string, timing TimingConfig) []Pet {
 	petsDir := filepath.Join(root, "pets")
 	pets := collectPets(petsDir, "", timing)
+	pets = appendCodexHomePets(pets, timing)
 	if len(pets) == 0 {
 		animations := loadPetFromDir(root, timing)
 		if hasAnimationFrames(animations) {
@@ -278,6 +279,12 @@ func collectPets(dir, namePrefix string, timing TimingConfig) []Pet {
 			name = namePrefix + "/" + name
 		}
 		childDir := filepath.Join(dir, entry.Name())
+		if looksLikeCodexPet(childDir) {
+			if pet, ok := loadCodexPet(childDir, name, timing); ok {
+				pets = append(pets, pet)
+			}
+			continue
+		}
 		animations := loadPetFromDir(childDir, timing)
 		if hasAnimationFrames(animations) {
 			pets = append(pets, Pet{name: name, animations: animations})

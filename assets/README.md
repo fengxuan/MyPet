@@ -11,6 +11,18 @@ assets/pets/兔子/          # 文件夹名字就是宠物名，随意
 └── hit/                  # 可省略
 ```
 
+也可以直接导入 [Codex Pet](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/codex-pet-contract.md) 的文件夹（`pet.json` + `spritesheet.webp` / `.png`）。整夹拷进 `pets/` 即可，不必拆成 idle/hover/hit：
+
+```text
+assets/pets/codie/
+├── pet.json
+└── spritesheet.webp
+```
+
+已经装在 `~/.codex/pets/`（或 `$CODEX_HOME/pets/`）里的自定义宠物会自动出现在「下一只」里，不用再拷一份。同名文件夹以 `assets/pets/` 为准。
+
+精灵图按 Codex 的 8 列 × 9 行（或 11 行）格子切开：待机用 idle，悬停用 waving，点击用 jumping（没有则用 failed）。
+
 也可以更随便：
 
 ```text
