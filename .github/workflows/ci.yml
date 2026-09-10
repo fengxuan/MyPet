@@ -14,5 +14,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Ebitengine's Linux GLFW backend includes <X11/Xlib.h> at compile time.
+      - name: Install Linux Ebitengine build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            libc6-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxxf86vm-dev \
+            libasound2-dev \
+            pkg-config
       - name: Test
         run: go test ./...
