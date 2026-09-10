@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test
+        run: go test ./...
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin
+            artifact: darwin
+          - os: windows-latest
+            target: windows
+            artifact: windows
+          - os: ubuntu-latest
+            target: linux/amd64
+            artifact: linux-amd64
+          - os: ubuntu-24.04-arm
+            target: linux/arm64
+            artifact: linux-arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Linux Ebitengine build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            libc6-dev \
+            libgl1-mesa-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxxf86vm-dev \
+            libasound2-dev \
+            pkg-config \
+            zip
+
+      - name: Build packages
+        shell: bash
+        run: ./build.sh ${{ matrix.target }}
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: mypet-${{ matrix.artifact }}
+          path: dist/mypet-*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: release-files
+        run: |
+          sha256sum mypet-*.zip | tee SHA256SUMS.txt
+          ls -lh
+
+      - name: Write release notes
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          ver="${VERSION#v}"
+          cat > release-body.md <<EOF
+          ## Downloads
+
+          Unzip the archive for your system. Keep the \`assets\` folder next to the executable.
+
+          | Platform | File |
+          | --- | --- |
+          | macOS Apple Silicon | \`mypet-${ver}-darwin-arm64.zip\` |
+          | macOS Intel | \`mypet-${ver}-darwin-amd64.zip\` |
+          | Windows x64 | \`mypet-${ver}-windows-amd64.zip\` |
+          | Windows ARM | \`mypet-${ver}-windows-arm64.zip\` |
+          | Linux x64 | \`mypet-${ver}-linux-amd64.zip\` |
+          | Linux ARM64 | \`mypet-${ver}-linux-arm64.zip\` |
+
+          解压后请保持 \`assets\` 和可执行文件在同一目录。
+
+          - Drag / 拖动: hold left mouse button
+          - Hit / 拍打: click or Space
+          - Next pet / 换一只: right-click → 下一只
+          - Quit / 退出: Esc
+          - Speed / 速度: \`assets/config.txt\`
+          EOF
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-files/*.zip
+            release-files/SHA256SUMS.txt
+          body_path: release-body.md
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

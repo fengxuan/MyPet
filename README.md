@@ -2,6 +2,26 @@
 
 一个使用 [Ebitengine](https://ebitengine.org/) 绘制的桌面小宠物示例。
 
+## 下载
+
+到 [GitHub Releases](https://github.com/fengxuan/MyPet/releases/latest) 下载对应系统的 zip，解压后保持 `assets` 和可执行文件在同一目录：
+
+| 系统 | 文件 |
+| --- | --- |
+| macOS Apple 芯片 | `mypet-*-darwin-arm64.zip` |
+| macOS Intel | `mypet-*-darwin-amd64.zip` |
+| Windows 64 位 | `mypet-*-windows-amd64.zip` |
+| Windows ARM | `mypet-*-windows-arm64.zip` |
+| Linux x64 | `mypet-*-linux-amd64.zip` |
+| Linux ARM64 | `mypet-*-linux-arm64.zip` |
+
+发布新版本：打上 `vX.Y.Z` 标签并 push，GitHub Actions 会自动编译并挂到 Release。
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## 运行
 
 ```bash
@@ -12,11 +32,18 @@ go run .
 ## 构建
 
 ```bash
-./build.sh
-./dist/mypet
+./build.sh          # 打包全部可交叉编译的桌面平台
+./build.sh local    # 只构建当前电脑
+./build.sh windows  # 只打 Windows
+./dist/mypet        # 当前平台可直接运行
 ```
 
-构建脚本会在 `dist/mypet` 生成当前平台的可执行文件。
+每个成功的平台会生成：
+
+- `dist/mypet-<os>-<arch>/`：可执行文件 + `assets`
+- `dist/mypet-<os>-<arch>.zip`：可分发的压缩包
+
+Windows / macOS 可在本机交叉编译。Linux 需要 C 编译器（`zig` 或 `x86_64-linux-gnu-gcc`），没有则自动跳过。解压后请保持 `assets` 和可执行文件在同一目录。正式发布走 GitHub Release，不必把 `dist/` 提交进仓库。
 
 程序现在使用透明、无边框、置顶窗口，只显示宠物本身，不会显示后面的背景面板。
 
