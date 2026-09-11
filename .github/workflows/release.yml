@@ -33,9 +33,10 @@ jobs:
             libxrandr-dev \
             libxxf86vm-dev \
             libasound2-dev \
-            pkg-config
+            pkg-config \
+            xvfb
       - name: Test
-        run: go test ./...
+        run: xvfb-run -a go test ./...
 
   build:
     needs: test
