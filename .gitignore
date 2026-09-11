@@ -8,4 +8,6 @@
 /android/local.properties
 /android/.idea/
 *.iml
+/app/*
 
+android/app/release/*
