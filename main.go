@@ -54,6 +54,10 @@ type Game struct {
 	menuOpen               bool
 	menuTimer              float64
 	nextButton             *ebiten.Image
+	pickerOpen             bool
+	pickerScroll           float64
+	pickerHover            int
+	pickerBuf              *ebiten.Image
 	assetsRoot             string
 	timing                 TimingConfig
 }
@@ -89,23 +93,37 @@ func (g *Game) Update() error {
 	mx, my := ebiten.CursorPosition()
 	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight) {
 		g.refreshPets()
-		if len(g.pets) >= 2 {
+		if g.pickerOpen {
+			g.closePicker()
+		} else if len(g.pets) >= 2 {
 			g.menuOpen = true
 			g.menuTimer = menuVisibleFor
 		}
 	}
-	if g.menuOpen {
+	if g.menuOpen && !g.pickerOpen {
 		g.menuTimer -= 1.0 / 60.0
 		if g.menuTimer <= 0 {
 			g.menuOpen = false
 		}
 	}
-	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) && g.menuOpen && hitNextButton(mx, my) {
-		g.nextPet()
-		g.menuOpen = true
-		g.menuTimer = menuVisibleFor
-		g.dragging = false
+	if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) && g.menuOpen && !g.pickerOpen && hitNextButton(mx, my) {
+		g.openPicker()
 		return nil
+	}
+	if g.pickerOpen {
+		g.updatePicker(mx, my)
+		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) {
+			choices := otherPetIndices(g.petIndex, len(g.pets))
+			hit := pickerHitIndex(mx, my, g.pickerScroll, len(choices))
+			if hit >= 0 && hit < len(choices) {
+				g.selectPet(choices[hit])
+				g.closePicker()
+			} else if !hitPickerPanel(mx, my) {
+				g.closePicker()
+			}
+			g.dragging = false
+			return nil
+		}
 	}
 
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
@@ -124,9 +142,9 @@ func (g *Game) Update() error {
 	if !g.dragging {
 		petX, petY := float64(screenWidth/2), 205.0
 		dx, dy := float64(mx)-petX, float64(my)-(petY+math.Sin(g.time*2.2)*5)
-		g.hovered = dx*dx/170.0/170.0+dy*dy/165.0/165.0 < 1
+		g.hovered = !g.pickerOpen && dx*dx/170.0/170.0+dy*dy/165.0/165.0 < 1
 	}
-	if !g.dragging && g.hovered && mouseDown {
+	if !g.pickerOpen && !g.dragging && g.hovered && mouseDown {
 		g.dragging = true
 		g.menuOpen = false
 		g.dragStartWindowX, g.dragStartWindowY = ebiten.WindowPosition()
@@ -181,7 +199,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	} else {
 		drawPet(screen, screenWidth/2, petY, g.hovered, g.time, g.hitActive, g.hitElapsed)
 	}
-	if g.menuOpen {
+	if g.pickerOpen {
+		g.drawPicker(screen)
+	} else if g.menuOpen {
 		drawNextButton(screen, g.nextButton)
 	}
 }
