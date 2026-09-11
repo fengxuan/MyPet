@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MyPet</string>
+    <string name="start_pet">启动桌面宠物</string>
+    <string name="stop_pet">关闭桌面宠物</string>
+    <string name="grant_overlay">去授权悬浮窗</string>
+    <string name="overlay_hint">Android 需要悬浮窗权限，宠物才会显示在其它 App 上面。</string>
+    <string name="usage_hint">拖动可以移动，点一下会拍打，长按打开宠物选择框（默认 5 只，可滚动）。</string>
+    <string name="notification_title">桌面宠物运行中</string>
+    <string name="notification_text">点这里返回设置，或把小猫从桌面上关掉。</string>
+    <string name="notification_channel">桌面宠物</string>
+    <string name="status_running">悬浮窗已打开</string>
+    <string name="status_stopped">悬浮窗未运行</string>
+    <string name="status_need_permission">还没有悬浮窗权限</string>
+</resources>

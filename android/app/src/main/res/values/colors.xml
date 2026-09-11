@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="panel">#E6281C16</color>
+    <color name="panel_item">#3A2820</color>
+    <color name="panel_item_hover">#5C3E2E</color>
+    <color name="peach">#F6A46B</color>
+    <color name="ink">#FFFAEF</color>
+    <color name="bg">#FFF6EC</color>
+</resources>

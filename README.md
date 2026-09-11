@@ -29,6 +29,17 @@ go mod tidy
 go run .
 ```
 
+## Android 悬浮窗
+
+`android/` 是独立的 Android App。前台 `PetService` 通过 `WindowManager` 添加透明悬浮窗口，里面是负责播放 idle/hover/hit 的 `PetView`。
+
+```bash
+cd android
+./gradlew :app:assembleDebug
+```
+
+安装后先授权悬浮窗，再点「启动桌面宠物」。拖动移动，点按拍打，长按切换宠物。详情见 [android/README.md](android/README.md)。
+
 ## 构建
 
 ```bash
